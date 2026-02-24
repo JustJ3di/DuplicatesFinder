@@ -23,10 +23,13 @@ def main() -> None:
     # If you later package this, consider using a richer configuration.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 
-    selector = FolderSelector(title="Select a folder to scan")
+    print("Select the folder to scan...")
+    selector = FolderSelector(title="Select the folder to scan")
     path = selector.select()
-
-    fh = FolderHandler(Path(path))
+    print("Select where to save the results...")
+    project_folder = FolderSelector(title="Select where to save the results")
+    project_folder = project_folder.select()
+    fh = FolderHandler(Path(path), project_root=Path(project_folder))
     try:
         fh.explore()
 
