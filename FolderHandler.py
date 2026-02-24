@@ -187,7 +187,7 @@ class FolderHandler:
         self.folder = folder.resolve()
         self._ext_set = set((allowed_extensions or COMMON_FILE_EXTENSIONS))
 
-        base = project_root or (Path(__file__).resolve().parent / datetime.now().strftime("%Y%m%d_%H%M%S"))
+        base = (project_root / datetime.now().strftime("%Y%m%d_%H%M%S")) or (Path(__file__).resolve().parent / datetime.now().strftime("%Y%m%d_%H%M%S"))
         base.mkdir(parents=True, exist_ok=True)
         self.project_folder = base
         self.db_path = self.project_folder / db_filename
