@@ -1,6 +1,6 @@
 # Duplicate File Finder (Python) + HTML Dashboard
 
-A Python tool that scans a user-selected directory, detects **byte-identical duplicate files**, stores scan data locally in SQLite, and generates a **standalone HTML dashboard** to explore results.
+A Python tool that scans a user-selected directory, detects **byte-identical duplicate files**, stores scan data in an in-memory B-tree, and generates a **standalone HTML dashboard** to explore results.
 
 ## What counts as a duplicate?
 
@@ -21,12 +21,7 @@ The tool recursively walks the selected folder and collects file metadata:
 - size
 - modification timestamp (nanoseconds)
 
-All metadata is stored in a **local SQLite database**.
-
-Why store data in SQLite?
-- It enables fast reporting queries without re-scanning.
-- It allows caching computed hashes and invalidating them if a file changes.
-- It supports large scans without keeping everything in memory.
+Metadata and hashes are held in a **B-tree in memory** for the duration of the scan. Nothing is cached between runs, and memory use grows with the number of scanned files.
 
 ### 2) Candidate filtering by size
 If two files have different sizes, they cannot be identical.
@@ -72,15 +67,16 @@ No backend required: open the HTML file in any browser.
 
 Typical output folder:
 - a timestamped directory containing:
-  - `activity_db.db` (SQLite database)
   - `duplicate_report.html` (dashboard)
+
+The command line displays progress bars for scanning and both hashing stages. If duplicates are found, a review window lets you choose copies to remove; it keeps one copy per group and asks for confirmation before deleting.
 
 ---
 
 ## Requirements
 
 - Python 3.10+ recommended
-- Standard library only (tkinter required for the folder dialog)
+- Standard library only (tkinter is required for the folder and cleanup dialogs)
 
 On some Linux distributions you may need to install Tkinter separately.
 

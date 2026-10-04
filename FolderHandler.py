@@ -9,10 +9,7 @@ This module provides:
   2) quick hash on samples (start/middle/end)
   3) full hash on candidates (streamed)
 
-- SQLite persistence to:
-  - cache scanning metadata (size, mtime, ext)
-  - cache hashes (quick_hash, full_hash)
-  - enable reporting queries without re-scanning
+- In-memory B-tree storage for scanned metadata and hashes.
 
 - A standalone HTML dashboard for analyzing duplicates.
 
@@ -22,17 +19,18 @@ Design notes:
 - We use `blake2b` because it is fast and secure enough for content identity checks.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import hashlib
 import logging
 import math
 import os
-import sqlite3
+
+from BTree import BTreeMap
 
 
 # ---------------------------------------------------------------------
@@ -152,6 +150,8 @@ class FileRow:
     ext: str
     size: int
     mtime_ns: int
+    quick_hash: Optional[str] = None
+    full_hash: Optional[str] = None
 
 
 # ---------------------------------------------------------------------
@@ -159,7 +159,7 @@ class FileRow:
 # ---------------------------------------------------------------------
 class FolderHandler:
     """
-    Scan a folder, store file metadata into a local SQLite DB, compute hashes, and generate an HTML report.
+    Scan a folder, store file metadata and hashes in an in-memory B-tree, and generate an HTML report.
 
     Typical usage:
         fh = FolderHandler(Path("/some/folder"))
@@ -175,159 +175,75 @@ class FolderHandler:
         *,
         allowed_extensions: Optional[Iterable[str]] = None,
         project_root: Optional[Path] = None,
-        db_filename: str = "activity_db.db",
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
     ) -> None:
         """
         Args:
             folder: Root folder to scan.
             allowed_extensions: If provided, only these extensions are considered.
-            project_root: Where to store scan artifacts (DB + HTML report). Defaults to timestamped folder next to this file.
-            db_filename: SQLite file name inside the project_root.
+            project_root: Where to store the HTML report. Defaults to a timestamped folder next to this file.
+            progress_callback: Optional callback receiving (phase, completed, total).
         """
         self.folder = folder.resolve()
         self._ext_set = set((allowed_extensions or COMMON_FILE_EXTENSIONS))
 
-        base = (project_root / datetime.now().strftime("%Y%m%d_%H%M%S")) or (Path(__file__).resolve().parent / datetime.now().strftime("%Y%m%d_%H%M%S"))
+        artifact_root = project_root or Path(__file__).resolve().parent
+        base = artifact_root / datetime.now().strftime("%Y%m%d_%H%M%S")
         base.mkdir(parents=True, exist_ok=True)
         self.project_folder = base
-        self.db_path = self.project_folder / db_filename
+        self.progress_callback = progress_callback
+        self.files: BTreeMap[str, FileRow] = BTreeMap()
 
-        self.db: Optional[sqlite3.Connection] = None
-
-    # -----------------------------
-    # DB lifecycle
-    # -----------------------------
-    def open_db(self) -> None:
-        """Open (or create) the SQLite database and ensure schema is present."""
-        if self.db is not None:
-            return
-
-        self.db = sqlite3.connect(self.db_path)
-        # Practical defaults for local analytics: WAL improves concurrent read/write patterns.
-        self.db.execute("PRAGMA journal_mode=WAL;")
-        self.db.execute("PRAGMA synchronous=NORMAL;")
-        self.db.execute("PRAGMA temp_store=MEMORY;")
-        self.db.execute("PRAGMA foreign_keys=ON;")
-        self._create_schema()
-
-    def close_db(self) -> None:
-        """Close the DB connection if open."""
-        if self.db is None:
-            return
-        try:
-            self.db.commit()
-        finally:
-            self.db.close()
-            self.db = None
-
-    def _create_schema(self) -> None:
-        """Create tables and indexes (idempotent)."""
-        assert self.db is not None
-
-        self.db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                path TEXT NOT NULL UNIQUE,
-                ext TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                mtime_ns INTEGER NOT NULL,
-                quick_hash TEXT,
-                full_hash TEXT,
-                scanned_at INTEGER NOT NULL DEFAULT (unixepoch())
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_files_size ON files(size);
-            CREATE INDEX IF NOT EXISTS idx_files_size_quick ON files(size, quick_hash);
-            CREATE INDEX IF NOT EXISTS idx_files_full_hash ON files(full_hash);
-            """
-        )
-        self.db.commit()
+    def _report_progress(self, phase: str, completed: int, total: int) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(phase, completed, total)
 
     def _upsert_file(self, row: FileRow) -> None:
         """
-        Insert or update a file record.
-
-        Critical behavior:
-        - If `size` or `mtime_ns` changes, we invalidate `quick_hash` and `full_hash`.
-          This prevents stale hash data after edits.
+        Insert or update a file record, invalidating hashes when its metadata changes.
         """
-        assert self.db is not None
-
-        self.db.execute(
-            """
-            INSERT OR IGNORE INTO files(path, ext, size, mtime_ns)
-            VALUES (?, ?, ?, ?);
-            """,
-            (row.path, row.ext, row.size, row.mtime_ns),
-        )
-
-        self.db.execute(
-            """
-            UPDATE files
-            SET
-                ext = ?,
-                scanned_at = unixepoch(),
-                quick_hash = CASE WHEN (size <> ? OR mtime_ns <> ?) THEN NULL ELSE quick_hash END,
-                full_hash  = CASE WHEN (size <> ? OR mtime_ns <> ?) THEN NULL ELSE full_hash  END,
-                size = ?,
-                mtime_ns = ?
-            WHERE path = ?;
-            """,
-            (row.ext, row.size, row.mtime_ns, row.size, row.mtime_ns, row.size, row.mtime_ns, row.path),
-        )
+        previous = self.files.get(row.path)
+        if previous is not None and (previous.size, previous.mtime_ns) == (row.size, row.mtime_ns):
+            row = replace(row, quick_hash=previous.quick_hash, full_hash=previous.full_hash)
+        self.files[row.path] = row
 
     # -----------------------------
     # Scan / Explore
     # -----------------------------
     def explore(self) -> None:
         """
-        Scan the folder recursively and store file metadata into the local DB.
+        Scan the folder recursively and store file metadata in the in-memory B-tree.
 
         Notes:
         - Uses os.walk for robustness and performance (avoids deep recursion).
         - Skips non-files and filters by allowed extensions.
         """
-        self.open_db()
-        assert self.db is not None
-
         logger.info("Scanning folder: %s", self.folder)
-
-        batch: List[FileRow] = []
-        batch_size = 500
-
+        total = sum(1 for path in self._iter_files(self.folder) if self._has_allowed_extension(path))
+        completed = 0
         for file_path in self._iter_files(self.folder):
+            if not self._has_allowed_extension(file_path):
+                continue
+            completed += 1
             try:
                 st = file_path.stat()
             except (FileNotFoundError, PermissionError, OSError) as e:
                 # A file might disappear mid-scan or be unreadable—skip gracefully.
                 logger.debug("Skipping unreadable file %s: %s", file_path, e)
+                self._report_progress("Scansione", completed, total)
                 continue
 
             ext = (file_path.suffix[1:].lower() if file_path.suffix else "")
-            if not ext or ext not in self._ext_set:
-                continue
-
-            batch.append(
+            self._upsert_file(
                 FileRow(
-                    path=str(file_path.resolve()),
-                    ext=ext,
-                    size=int(st.st_size),
-                    mtime_ns=int(st.st_mtime_ns),
+                    path=str(file_path.resolve()), ext=ext,
+                    size=int(st.st_size), mtime_ns=int(st.st_mtime_ns),
                 )
             )
+            self._report_progress("Scansione", completed, total)
 
-            # Batch DB writes to reduce I/O overhead.
-            if len(batch) >= batch_size:
-                for row in batch:
-                    self._upsert_file(row)
-                self.db.commit()
-                batch.clear()
-
-        # Flush last batch
-        for row in batch:
-            self._upsert_file(row)
-        self.db.commit()
+        if total == 0:
+            self._report_progress("Scansione", 0, 0)
 
     def _iter_files(self, root: Path) -> Iterable[Path]:
         """Yield file paths under root using os.walk (robust for deep trees)."""
@@ -335,6 +251,10 @@ class FolderHandler:
             base = Path(dirpath)
             for name in filenames:
                 yield base / name
+
+    def _has_allowed_extension(self, path: Path) -> bool:
+        extension = path.suffix[1:].lower() if path.suffix else ""
+        return bool(extension and extension in self._ext_set)
 
     # -----------------------------
     # Hash computation pipelines
@@ -353,41 +273,27 @@ class FolderHandler:
         Returns:
             Number of updated rows.
         """
-        self.open_db()
-        assert self.db is not None
-
-        sql = """
-        WITH dup_sizes AS (
-            SELECT size
-            FROM files
-            GROUP BY size
-            HAVING COUNT(*) > 1
-        )
-        SELECT path
-        FROM files
-        WHERE quick_hash IS NULL
-          AND size IN (SELECT size FROM dup_sizes)
-        """
-        params: Tuple[object, ...] = ()
+        size_counts: Dict[int, int] = {}
+        records = list(self.files.values())
+        for row in records:
+            size_counts[row.size] = size_counts.get(row.size, 0) + 1
+        candidates = [row for row in records if size_counts[row.size] > 1 and row.quick_hash is None]
         if limit is not None:
-            sql += " LIMIT ?"
-            params = (limit,)
-
-        rows = self.db.execute(sql, params).fetchall()
+            candidates = candidates[:limit]
 
         updated = 0
-        for (p,) in rows:
-            path = Path(p)
+        for completed, row in enumerate(candidates, start=1):
+            path = Path(row.path)
             try:
                 qh = compute_quick_hash(path)
             except (FileNotFoundError, PermissionError, OSError) as e:
                 logger.debug("Quick-hash failed for %s: %s", path, e)
-                continue
-
-            self.db.execute("UPDATE files SET quick_hash = ? WHERE path = ?;", (qh, p))
-            updated += 1
-
-        self.db.commit()
+            else:
+                self.files[row.path] = replace(row, quick_hash=qh)
+                updated += 1
+            self._report_progress("Hash rapido", completed, len(candidates))
+        if not candidates:
+            self._report_progress("Hash rapido", 0, 0)
         return updated
 
     def compute_full_hashes_for_quick_groups(self, limit: Optional[int] = None) -> int:
@@ -404,43 +310,31 @@ class FolderHandler:
         Returns:
             Number of updated rows.
         """
-        self.open_db()
-        assert self.db is not None
-
-        sql = """
-        WITH dup_quick AS (
-            SELECT size, quick_hash
-            FROM files
-            WHERE quick_hash IS NOT NULL
-            GROUP BY size, quick_hash
-            HAVING COUNT(*) > 1
-        )
-        SELECT f.path
-        FROM files f
-        JOIN dup_quick d
-          ON f.size = d.size AND f.quick_hash = d.quick_hash
-        WHERE f.full_hash IS NULL
-        """
-        params: Tuple[object, ...] = ()
+        quick_groups: Dict[Tuple[int, str], List[FileRow]] = {}
+        for row in self.files.values():
+            if row.quick_hash is not None:
+                quick_groups.setdefault((row.size, row.quick_hash), []).append(row)
+        candidates = [
+            row
+            for group in quick_groups.values() if len(group) > 1
+            for row in group if row.full_hash is None
+        ]
         if limit is not None:
-            sql += " LIMIT ?"
-            params = (limit,)
-
-        rows = self.db.execute(sql, params).fetchall()
+            candidates = candidates[:limit]
 
         updated = 0
-        for (p,) in rows:
-            path = Path(p)
+        for completed, row in enumerate(candidates, start=1):
+            path = Path(row.path)
             try:
                 fh = compute_full_hash(path)
             except (FileNotFoundError, PermissionError, OSError) as e:
                 logger.debug("Full-hash failed for %s: %s", path, e)
-                continue
-
-            self.db.execute("UPDATE files SET full_hash = ? WHERE path = ?;", (fh, p))
-            updated += 1
-
-        self.db.commit()
+            else:
+                self.files[row.path] = replace(row, full_hash=fh)
+                updated += 1
+            self._report_progress("Hash completo", completed, len(candidates))
+        if not candidates:
+            self._report_progress("Hash completo", 0, 0)
         return updated
 
     def find_duplicate_groups(self) -> List[Tuple[str, List[str]]]:
@@ -451,24 +345,68 @@ class FolderHandler:
             List of tuples:
                 [(full_hash, [path1, path2, ...]), ...]
         """
-        self.open_db()
-        assert self.db is not None
+        groups: Dict[str, List[str]] = {}
+        for row in self.files.values():
+            if row.full_hash is not None:
+                groups.setdefault(row.full_hash, []).append(row.path)
+        return [(full_hash, paths) for full_hash, paths in groups.items() if len(paths) > 1]
 
-        rows = self.db.execute(
-            """
-            SELECT full_hash, GROUP_CONCAT(path)
-            FROM files
-            WHERE full_hash IS NOT NULL
-            GROUP BY full_hash
-            HAVING COUNT(*) > 1;
-            """
-        ).fetchall()
+    def delete_duplicate_files(self, paths: Iterable[str]) -> Tuple[List[str], List[Tuple[str, str]]]:
+        """Delete selected scanned duplicates while retaining one unchanged copy per group."""
+        groups = self.find_duplicate_groups()
+        requested = {Path(path).resolve() for path in paths}
+        if not requested:
+            return [], []
 
-        out: List[Tuple[str, List[str]]] = []
-        for full_hash, paths_csv in rows:
-            paths = paths_csv.split(",") if paths_csv else []
-            out.append((full_hash, paths))
-        return out
+        root = self.folder.resolve()
+        path_groups: Dict[Path, Tuple[str, List[Path]]] = {}
+        for full_hash, group_paths in groups:
+            resolved_group = [Path(path).resolve() for path in group_paths]
+            for path in resolved_group:
+                path_groups[path] = (full_hash, resolved_group)
+
+        selected_by_hash: Dict[str, List[Path]] = {}
+        for path in requested:
+            try:
+                path.relative_to(root)
+            except ValueError as exc:
+                raise ValueError(f"Il file non appartiene alla cartella analizzata: {path}") from exc
+            if path not in path_groups:
+                raise ValueError(f"Il file non risulta in un gruppo di duplicati: {path}")
+            full_hash, _ = path_groups[path]
+            selected_by_hash.setdefault(full_hash, []).append(path)
+
+        for full_hash, selected in selected_by_hash.items():
+            group_paths = path_groups[selected[0]][1]
+            if len(selected) >= len(group_paths):
+                raise ValueError("La selezione eliminerebbe tutte le copie di un gruppo.")
+
+            for path in selected:
+                if not path.is_file() or compute_full_hash(path) != full_hash:
+                    raise ValueError(f"Il file è stato modificato o non è più disponibile: {path}")
+
+            remaining = [path for path in group_paths if path not in selected]
+            if not any(path.is_file() and compute_full_hash(path) == full_hash for path in remaining):
+                raise ValueError("Non è rimasta una copia valida del gruppo selezionato.")
+
+        deleted: List[str] = []
+        failures: List[Tuple[str, str]] = []
+        for path in requested:
+            try:
+                path.unlink()
+                deleted.append(str(path))
+            except OSError as exc:
+                failures.append((str(path), str(exc)))
+        deleted_paths = set(deleted)
+        if deleted_paths:
+            remaining_records = [
+                (path, row) for path, row in self.files.items()
+                if path not in deleted_paths
+            ]
+            self.files = BTreeMap()
+            for path, row in remaining_records:
+                self.files[path] = row
+        return deleted, failures
 
     # -----------------------------
     # Reporting helpers
@@ -590,36 +528,23 @@ class FolderHandler:
 
     def _fetch_examined_counts_by_category(self) -> Dict[str, int]:
         """Counts examined files by macro-category."""
-        assert self.db is not None
-        rows = self.db.execute("SELECT ext, COUNT(*) FROM files GROUP BY ext;").fetchall()
-
         counts: Dict[str, int] = {}
-        for ext, c in rows:
-            cat = self._ext_category(ext)
-            counts[cat] = counts.get(cat, 0) + int(c)
+        for row in self.files.values():
+            category = self._ext_category(row.ext)
+            counts[category] = counts.get(category, 0) + 1
         return counts
 
     def _fetch_duplicate_file_rows(self) -> List[Tuple[str, str, str]]:
         """
         Return (full_hash, ext, path) rows only for files in duplicate groups.
         """
-        assert self.db is not None
-        rows = self.db.execute(
-            """
-            SELECT f.full_hash, f.ext, f.path
-            FROM files f
-            JOIN (
-                SELECT full_hash
-                FROM files
-                WHERE full_hash IS NOT NULL
-                GROUP BY full_hash
-                HAVING COUNT(*) > 1
-            ) d
-            ON f.full_hash = d.full_hash
-            ORDER BY f.ext, f.full_hash, f.path;
-            """
-        ).fetchall()
-        return [(fh, ext, path) for (fh, ext, path) in rows]
+        duplicate_hashes = {full_hash for full_hash, _ in self.find_duplicate_groups()}
+        rows = [
+            (row.full_hash, row.ext, row.path)
+            for row in self.files.values()
+            if row.full_hash in duplicate_hashes
+        ]
+        return sorted(rows, key=lambda row: (row[1], row[0], row[2]))
 
     # -----------------------------
     # HTML report
@@ -642,30 +567,14 @@ class FolderHandler:
         Returns:
             Path to the generated HTML.
         """
-        self.open_db()
-        assert self.db is not None
-
         if output_path is None:
             output_path = self.project_folder / "duplicate_report.html"
         output_path = output_path.resolve()
 
-        total_files = int(self.db.execute("SELECT COUNT(*) FROM files;").fetchone()[0])
-        distinct_exts = int(self.db.execute("SELECT COUNT(DISTINCT ext) FROM files;").fetchone()[0])
-
-        dup_groups = int(
-            self.db.execute(
-                """
-                SELECT COUNT(*)
-                FROM (
-                    SELECT full_hash
-                    FROM files
-                    WHERE full_hash IS NOT NULL
-                    GROUP BY full_hash
-                    HAVING COUNT(*) > 1
-                );
-                """
-            ).fetchone()[0]
-        )
+        records = list(self.files.values())
+        total_files = len(records)
+        distinct_exts = len({row.ext for row in records})
+        dup_groups = len(self.find_duplicate_groups())
 
         examined_by_cat = self._fetch_examined_counts_by_category()
 

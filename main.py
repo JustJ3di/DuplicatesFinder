@@ -3,7 +3,7 @@ CLI entry point.
 
 This script:
 1) asks the user for a folder,
-2) scans and stores file metadata into SQLite,
+2) scans and stores file metadata in an in-memory B-tree,
 3) computes quick hashes for same-size candidates,
 4) computes full hashes for quick-hash candidate groups,
 5) generates an HTML dashboard.
@@ -12,10 +12,27 @@ This script:
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 from FolderHandler import FolderHandler
 from FolderSelector import FolderSelector
+from DuplicateCleaner import DuplicateCleaner
+
+
+def show_progress(phase: str, completed: int, total: int) -> None:
+    if total == 0:
+        print(f"{phase}: nessun file da elaborare")
+        return
+
+    width = 32
+    percent = completed / total
+    filled = int(width * percent)
+    bar = "#" * filled + "-" * (width - filled)
+    sys.stdout.write(f"\r{phase}: [{bar}] {percent:6.1%} ({completed}/{total})")
+    if completed >= total:
+        sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 def main() -> None:
@@ -29,21 +46,22 @@ def main() -> None:
     print("Select where to save the results...")
     project_folder = FolderSelector(title="Select where to save the results")
     project_folder = project_folder.select()
-    fh = FolderHandler(Path(path), project_root=Path(project_folder))
-    try:
-        fh.explore()
+    fh = FolderHandler(
+        Path(path),
+        project_root=Path(project_folder),
+        progress_callback=show_progress,
+    )
+    fh.explore()
 
-        # Hash pipeline:
-        # size duplicates -> quick hash -> full hash.
-        fh.compute_quick_hashes_for_size_duplicates()
-        fh.compute_full_hashes_for_quick_groups()
+    # Hash pipeline: same-size candidates -> quick hash -> full hash.
+    fh.compute_quick_hashes_for_size_duplicates()
+    fh.compute_full_hashes_for_quick_groups()
 
-        report_path = fh.generate_html_report()
-        print("Report created:", report_path)
-
-    finally:
-        # Ensure DB resources are always released even if something goes wrong.
-        fh.close_db()
+    duplicate_groups = fh.find_duplicate_groups()
+    if duplicate_groups:
+        DuplicateCleaner(fh, duplicate_groups).show()
+    report_path = fh.generate_html_report()
+    print("Report created:", report_path)
 
 
 if __name__ == "__main__":
