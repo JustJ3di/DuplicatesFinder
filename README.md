@@ -65,11 +65,9 @@ No backend required: open the HTML file in any browser.
 
 ## Project layout
 
-Typical output folder:
-- a timestamped directory containing:
-  - `duplicate_report.html` (dashboard)
+The selected output directory contains `duplicate_report.html` directly. The application does not create a timestamped subfolder; if a report with that name already exists, it asks before replacing it.
 
-The command line displays progress bars for scanning and both hashing stages. If duplicates are found, a review window lets you choose copies to remove; it keeps one copy per group and asks for confirmation before deleting. After the review, the HTML report opens automatically. If no duplicates are found, the app displays a completion message and opens the report so the result is visible even when launched as a Windows executable.
+The application has a main window for choosing both folders, starting scans, and viewing progress. If duplicates are found, a review window lets you choose copies to remove; it keeps one copy per group and asks for confirmation before deleting. The HTML report opens when the review closes. If no duplicates are found, the app displays a completion message and opens the report.
 
 ---
 
@@ -83,7 +81,7 @@ The command line displays progress bars for scanning and both hashing stages. If
 
 The GitHub Releases page provides standalone executables for Linux x86_64, Windows x86_64, and macOS. Each executable bundles the Python runtime and the dependencies needed by the application, including Tk/Tcl from the corresponding build environment. Download the asset matching your operating system and run it; no Python installation is required.
 
-The executable opens folder-selection and duplicate-review dialogs. On Linux, run it from a terminal if you want to see scan and hashing progress bars.
+The executable opens an interactive main window with folder selection and scan progress.
 
 ## Building Locally
 
@@ -91,7 +89,7 @@ Building requires Python 3.10+ with Tkinter/Tcl/Tk installed, plus the pinned Py
 
 ```bash
 python -m pip install -r requirements-build.txt
-python -m PyInstaller --clean --noconfirm --onefile --name duplicates-finder main.py
+python -m PyInstaller --clean --noconfirm --onefile --windowed --name duplicates-finder main.py
 ```
 
 The executable is written to `dist/`. Build on each target operating system; PyInstaller does not cross-compile executables between operating systems.

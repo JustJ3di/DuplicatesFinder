@@ -2,25 +2,38 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import messagebox, ttk
-from typing import List, Tuple
+from typing import Callable, List, Tuple
 
 from FolderHandler import FolderHandler
 
 
 class DuplicateCleaner:
-    def __init__(self, folder_handler: FolderHandler, groups: List[Tuple[str, List[str]]]) -> None:
+    def __init__(
+        self,
+        folder_handler: FolderHandler,
+        groups: List[Tuple[str, List[str]]],
+        *,
+        parent: tk.Misc | None = None,
+        on_close: Callable[[], None] | None = None,
+    ) -> None:
         self.folder_handler = folder_handler
         self.groups = groups
+        self.parent = parent
+        self.on_close = on_close
         self.selections: List[Tuple[str, tk.BooleanVar]] = []
         self.window: tk.Tk | None = None
         self.count_label: ttk.Label | None = None
 
     def show(self) -> None:
-        window = tk.Tk()
+        window = tk.Toplevel(self.parent) if self.parent is not None else tk.Tk()
         self.window = window
         window.title("Rimozione file duplicati")
         window.geometry("900x620")
         window.minsize(600, 400)
+        window.protocol("WM_DELETE_WINDOW", self._close)
+        if self.parent is not None:
+            window.transient(self.parent)
+            window.grab_set()
 
         frame = ttk.Frame(window, padding=14)
         frame.pack(fill="both", expand=True)
@@ -63,7 +76,8 @@ class DuplicateCleaner:
         self.count_label.pack(side="left")
         ttk.Button(actions, text="Elimina file selezionati", command=self._delete_selected).pack(side="right")
         self._update_count()
-        window.mainloop()
+        if self.parent is None:
+            window.mainloop()
 
     def _update_count(self) -> None:
         if self.count_label is not None:
@@ -100,4 +114,12 @@ class DuplicateCleaner:
             )
         else:
             messagebox.showinfo("Completato", f"Eliminati {len(deleted)} file.", parent=self.window)
-        self.window.destroy()
+        self._close()
+
+    def _close(self) -> None:
+        if self.window is not None and self.window.winfo_exists():
+            self.window.destroy()
+        if self.on_close is not None:
+            callback = self.on_close
+            self.on_close = None
+            callback()

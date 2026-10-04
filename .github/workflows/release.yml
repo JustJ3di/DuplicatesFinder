@@ -42,7 +42,7 @@ jobs:
         run: python -m pip install -r requirements-build.txt
 
       - name: Build standalone executable
-        run: python -m PyInstaller --clean --noconfirm --onefile --name duplicates-finder main.py
+        run: python -m PyInstaller --clean --noconfirm --onefile --windowed --name duplicates-finder main.py
 
       - name: Name release asset
         env:

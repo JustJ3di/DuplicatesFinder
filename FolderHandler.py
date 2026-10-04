@@ -20,7 +20,6 @@ Design notes:
 """
 
 from dataclasses import dataclass, replace
-from datetime import datetime
 from html import escape
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
@@ -181,14 +180,13 @@ class FolderHandler:
         Args:
             folder: Root folder to scan.
             allowed_extensions: If provided, only these extensions are considered.
-            project_root: Where to store the HTML report. Defaults to a timestamped folder next to this file.
+            project_root: Existing destination directory for the HTML report. Defaults to this file's directory.
             progress_callback: Optional callback receiving (phase, completed, total).
         """
         self.folder = folder.resolve()
         self._ext_set = set((allowed_extensions or COMMON_FILE_EXTENSIONS))
 
-        artifact_root = project_root or Path(__file__).resolve().parent
-        base = artifact_root / datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = project_root or Path(__file__).resolve().parent
         base.mkdir(parents=True, exist_ok=True)
         self.project_folder = base
         self.progress_callback = progress_callback
