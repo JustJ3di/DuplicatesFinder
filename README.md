@@ -69,7 +69,7 @@ Typical output folder:
 - a timestamped directory containing:
   - `duplicate_report.html` (dashboard)
 
-The command line displays progress bars for scanning and both hashing stages. If duplicates are found, a review window lets you choose copies to remove; it keeps one copy per group and asks for confirmation before deleting.
+The command line displays progress bars for scanning and both hashing stages. If duplicates are found, a review window lets you choose copies to remove; it keeps one copy per group and asks for confirmation before deleting. After the review, the HTML report opens automatically. If no duplicates are found, the app displays a completion message and opens the report so the result is visible even when launched as a Windows executable.
 
 ---
 

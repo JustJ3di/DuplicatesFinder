@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import logging
 import sys
+import webbrowser
 from pathlib import Path
+from tkinter import messagebox
 
 from FolderHandler import FolderHandler
 from FolderSelector import FolderSelector
@@ -61,6 +63,13 @@ def main() -> None:
     if duplicate_groups:
         DuplicateCleaner(fh, duplicate_groups).show()
     report_path = fh.generate_html_report()
+    if not duplicate_groups:
+        messagebox.showinfo(
+            "Scansione completata",
+            f"Nessun file duplicato trovato tra i {len(fh.files)} file analizzati.\n\n"
+            f"Report: {report_path}",
+        )
+    webbrowser.open(report_path.as_uri())
     print("Report created:", report_path)
 
 
