@@ -76,9 +76,27 @@ The command line displays progress bars for scanning and both hashing stages. If
 ## Requirements
 
 - Python 3.10+ recommended
-- Standard library only (tkinter is required for the folder and cleanup dialogs)
+- No third-party Python packages are needed to run the source code.
+- Tkinter/Tcl/Tk is required for the folder selection and duplicate-cleanup dialogs. On Linux, install the Tk package provided by your distribution (for example, `python3-tk` on Debian/Ubuntu).
 
-On some Linux distributions you may need to install Tkinter separately.
+## Standalone Executables
+
+The GitHub Releases page provides standalone executables for Linux x86_64, Windows x86_64, and macOS. Each executable bundles the Python runtime and the dependencies needed by the application, including Tk/Tcl from the corresponding build environment. Download the asset matching your operating system and run it; no Python installation is required.
+
+The executable opens folder-selection and duplicate-review dialogs. On Linux, run it from a terminal if you want to see scan and hashing progress bars.
+
+## Building Locally
+
+Building requires Python 3.10+ with Tkinter/Tcl/Tk installed, plus the pinned PyInstaller build dependency:
+
+```bash
+python -m pip install -r requirements-build.txt
+python -m PyInstaller --clean --noconfirm --onefile --name duplicates-finder main.py
+```
+
+The executable is written to `dist/`. Build on each target operating system; PyInstaller does not cross-compile executables between operating systems.
+
+GitHub Actions builds all three platform executables and publishes them as release assets whenever a version tag (`v*`) is pushed.
 
 ---
 

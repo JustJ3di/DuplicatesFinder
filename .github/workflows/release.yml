@@ -1,0 +1,80 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }} executable
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            binary: dist/duplicates-finder
+            asset: duplicates-finder-linux-x86_64
+          - os: windows-latest
+            platform: windows-x86_64
+            binary: dist/duplicates-finder.exe
+            asset: duplicates-finder-windows-x86_64.exe
+          - os: macos-latest
+            platform: macos
+            binary: dist/duplicates-finder
+            asset: duplicates-finder-macos
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Build standalone executable
+        run: python -m PyInstaller --clean --noconfirm --onefile --name duplicates-finder main.py
+
+      - name: Name release asset
+        env:
+          SOURCE_BINARY: ${{ matrix.binary }}
+          RELEASE_ASSET: ${{ matrix.asset }}
+        run: python -c "import os, shutil; shutil.copy2(os.environ['SOURCE_BINARY'], os.environ['RELEASE_ASSET'])"
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download executable artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release and attach executables
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" release-assets/* --title "$RELEASE_TAG" --generate-notes
