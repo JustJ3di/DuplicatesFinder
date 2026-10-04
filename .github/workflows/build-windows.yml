@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - realase-branch
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -40,9 +42,9 @@ jobs:
           retention-days: 14
 
   publish:
-    name: Publish v1.0.1 release
+    name: Publish release
     needs: build
-    if: github.event_name == 'push' && github.event.head_commit.message == 'Publish v1.0.1 release with Windows executable'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -58,10 +60,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh api "repos/$GH_REPO/releases" --method POST \
-            -f tag_name=v1.0.1 \
-            -f name="DuplicatesFinder v1.0.1" \
-            -f body="Windows executable built from main (commit c79466b)." \
-            -f make_latest=false
-          gh release upload v1.0.1 release-assets/duplicates-finder.exe
+          gh release create "$RELEASE_TAG" release-assets/duplicates-finder.exe \
+            --repo "$GH_REPO" \
+            --title "DuplicatesFinder $RELEASE_TAG" \
+            --generate-notes
