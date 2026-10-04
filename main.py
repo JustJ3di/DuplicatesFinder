@@ -24,6 +24,7 @@ from FolderSelector import FolderSelector
 
 def run_scan_with_progress(folder: Path, project_root: Path) -> None:
     updates: queue.Queue[tuple[str, str]] = queue.Queue()
+    delete_decisions: queue.Queue[bool] = queue.Queue()
 
     window = tk.Tk()
     window.title("Duplicate File Finder")
@@ -58,10 +59,28 @@ def run_scan_with_progress(folder: Path, project_root: Path) -> None:
 
             updates.put(("status", "Generating report..."))
             report_path = handler.generate_html_report()
+
+            duplicate_count = sum(
+                len(paths) - 1 for _, paths in handler.find_duplicate_groups()
+            )
+            result_message = f"Report created: {report_path}"
+            if duplicate_count:
+                updates.put(("confirm_delete", str(duplicate_count)))
+                if delete_decisions.get():
+                    updates.put(("status", "Removing duplicate files..."))
+                    deleted_paths, skipped_paths = handler.delete_duplicate_files()
+                    result_message += f"\nDeleted {len(deleted_paths)} duplicate file(s)."
+                    if skipped_paths:
+                        result_message += (
+                            f"\nSkipped {len(skipped_paths)} file(s) that changed "
+                            "or could not be accessed."
+                        )
+                else:
+                    result_message += "\nNo files were deleted."
         except Exception as error:
             updates.put(("error", str(error)))
         else:
-            updates.put(("done", str(report_path)))
+            updates.put(("done", result_message))
         finally:
             if handler is not None:
                 handler.close_db()
@@ -82,6 +101,14 @@ def run_scan_with_progress(folder: Path, project_root: Path) -> None:
                 event, message = updates.get_nowait()
                 if event == "status":
                     status.set(message)
+                elif event == "confirm_delete":
+                    should_delete = messagebox.askyesno(
+                        "Delete duplicate files?",
+                        f"Found {message} duplicate file(s). Delete them and keep one "
+                        "copy per group? This cannot be undone.",
+                        parent=window,
+                    )
+                    delete_decisions.put(should_delete)
                 else:
                     progress.stop()
                     close_button.config(state="normal")

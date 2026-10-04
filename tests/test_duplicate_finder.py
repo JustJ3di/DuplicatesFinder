@@ -93,6 +93,38 @@ class DuplicateFinderIntegrationTests(unittest.TestCase):
             finally:
                 handler.close_db()
 
+    def test_delete_duplicates_keeps_a_copy_and_skips_changed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scan_folder = root / "scan-input"
+            scan_folder.mkdir()
+            first = scan_folder / "group-a.txt"
+            second = scan_folder / "group-b.txt"
+            third = scan_folder / "group-c.txt"
+            first.write_bytes(b"duplicate content\n")
+            second.write_bytes(b"duplicate content\n")
+            third.write_bytes(b"duplicate content\n")
+
+            handler = FolderHandler(scan_folder, project_root=root / "scan-output")
+            try:
+                handler.explore()
+                self.assertEqual(handler.compute_quick_hashes_for_size_duplicates(), 3)
+                self.assertEqual(handler.compute_full_hashes_for_quick_groups(), 3)
+
+                first.write_bytes(b"modified content!\n")
+                deleted_paths, skipped_paths = handler.delete_duplicate_files()
+
+                self.assertEqual(len(deleted_paths), 1)
+                self.assertIn(str(first.resolve()), skipped_paths)
+                self.assertTrue(first.exists())
+                self.assertEqual(
+                    sum(path.exists() for path in (second, third)),
+                    1,
+                )
+                self.assertEqual(handler.find_duplicate_groups(), [])
+            finally:
+                handler.close_db()
+
 
 if __name__ == "__main__":
     unittest.main()

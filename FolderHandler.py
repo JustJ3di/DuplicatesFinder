@@ -470,6 +470,75 @@ class FolderHandler:
             out.append((full_hash, paths))
         return out
 
+    def delete_duplicate_files(self) -> Tuple[List[str], List[str]]:
+        """Delete verified duplicate copies, keeping one file per hash group.
+
+        Files changed, missing, outside the scanned folder, or inaccessible since
+        the scan are skipped. Returns the deleted and skipped paths.
+        """
+        self.open_db()
+        assert self.db is not None
+
+        deleted_paths: List[str] = []
+        skipped_paths: List[str] = []
+
+        for expected_hash, paths in self.find_duplicate_groups():
+            verified: List[Tuple[str, Path, int, int]] = []
+            for raw_path in sorted(paths):
+                path = Path(raw_path)
+                try:
+                    resolved_path = path.resolve(strict=True)
+                    resolved_path.relative_to(self.folder)
+                    before = resolved_path.stat()
+                    current_hash = compute_full_hash(resolved_path)
+                    after = resolved_path.stat()
+                except FileNotFoundError:
+                    self.db.execute("DELETE FROM files WHERE path = ?;", (raw_path,))
+                    skipped_paths.append(raw_path)
+                    continue
+                except (OSError, RuntimeError, ValueError):
+                    self.db.execute(
+                        "UPDATE files SET quick_hash = NULL, full_hash = NULL WHERE path = ?;",
+                        (raw_path,),
+                    )
+                    skipped_paths.append(raw_path)
+                    continue
+
+                if (
+                    before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns
+                    or current_hash != expected_hash
+                ):
+                    self.db.execute(
+                        "UPDATE files SET quick_hash = NULL, full_hash = NULL WHERE path = ?;",
+                        (raw_path,),
+                    )
+                    skipped_paths.append(raw_path)
+                    continue
+
+                verified.append((raw_path, resolved_path, after.st_size, after.st_mtime_ns))
+
+            for raw_path, path, size, mtime_ns in verified[1:]:
+                try:
+                    current = path.stat()
+                    if current.st_size != size or current.st_mtime_ns != mtime_ns:
+                        self.db.execute(
+                            "UPDATE files SET quick_hash = NULL, full_hash = NULL WHERE path = ?;",
+                            (raw_path,),
+                        )
+                        skipped_paths.append(raw_path)
+                        continue
+                    path.unlink()
+                except OSError:
+                    skipped_paths.append(raw_path)
+                    continue
+
+                self.db.execute("DELETE FROM files WHERE path = ?;", (raw_path,))
+                deleted_paths.append(raw_path)
+
+        self.db.commit()
+        return deleted_paths, skipped_paths
+
     # -----------------------------
     # Reporting helpers
     # -----------------------------
