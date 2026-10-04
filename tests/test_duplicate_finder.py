@@ -111,17 +111,43 @@ class DuplicateFinderIntegrationTests(unittest.TestCase):
                 self.assertEqual(handler.compute_quick_hashes_for_size_duplicates(), 3)
                 self.assertEqual(handler.compute_full_hashes_for_quick_groups(), 3)
 
-                first.write_bytes(b"modified content!\n")
-                deleted_paths, skipped_paths = handler.delete_duplicate_files()
+                reviewed_groups = handler.find_duplicate_groups()
+                second.write_bytes(b"modified content!\n")
+                deleted_paths, skipped_paths = handler.delete_duplicate_files(reviewed_groups)
 
                 self.assertEqual(len(deleted_paths), 1)
-                self.assertIn(str(first.resolve()), skipped_paths)
+                self.assertEqual(deleted_paths, [str(third.resolve())])
+                self.assertIn(str(second.resolve()), skipped_paths)
                 self.assertTrue(first.exists())
-                self.assertEqual(
-                    sum(path.exists() for path in (second, third)),
-                    1,
-                )
+                self.assertTrue(second.exists())
+                self.assertFalse(third.exists())
                 self.assertEqual(handler.find_duplicate_groups(), [])
+            finally:
+                handler.close_db()
+
+    def test_delete_duplicates_keeps_the_reviewed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scan_folder = root / "scan-input"
+            scan_folder.mkdir()
+            first = scan_folder / "group-a.txt"
+            second = scan_folder / "group-b.txt"
+            first.write_bytes(b"duplicate content\n")
+            second.write_bytes(b"duplicate content\n")
+
+            handler = FolderHandler(scan_folder, project_root=root / "scan-output")
+            try:
+                handler.explore()
+                handler.compute_quick_hashes_for_size_duplicates()
+                handler.compute_full_hashes_for_quick_groups()
+                reviewed_groups = handler.find_duplicate_groups()
+
+                deleted_paths, skipped_paths = handler.delete_duplicate_files(reviewed_groups)
+
+                self.assertEqual(deleted_paths, [str(second.resolve())])
+                self.assertEqual(skipped_paths, [])
+                self.assertTrue(first.exists())
+                self.assertFalse(second.exists())
             finally:
                 handler.close_db()
 

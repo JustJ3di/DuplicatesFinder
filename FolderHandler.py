@@ -470,8 +470,11 @@ class FolderHandler:
             out.append((full_hash, paths))
         return out
 
-    def delete_duplicate_files(self) -> Tuple[List[str], List[str]]:
-        """Delete verified duplicate copies, keeping one file per hash group.
+    def delete_duplicate_files(
+        self,
+        reviewed_groups: Optional[Iterable[Tuple[str, List[str]]]] = None,
+    ) -> Tuple[List[str], List[str]]:
+        """Delete reviewed duplicate copies while preserving each reviewed keeper.
 
         Files changed, missing, outside the scanned folder, or inaccessible since
         the scan are skipped. Returns the deleted and skipped paths.
@@ -482,9 +485,34 @@ class FolderHandler:
         deleted_paths: List[str] = []
         skipped_paths: List[str] = []
 
-        for expected_hash, paths in self.find_duplicate_groups():
-            verified: List[Tuple[str, Path, int, int]] = []
-            for raw_path in sorted(paths):
+        groups = reviewed_groups if reviewed_groups is not None else self.find_duplicate_groups()
+        for expected_hash, paths in groups:
+            reviewed_paths = sorted(set(paths))
+            if len(reviewed_paths) < 2:
+                continue
+
+            keeper_path = reviewed_paths[0]
+            candidates = reviewed_paths[1:]
+
+            try:
+                keeper = Path(keeper_path).resolve(strict=True)
+                keeper.relative_to(self.folder)
+                before = keeper.stat()
+                keeper_hash = compute_full_hash(keeper)
+                after = keeper.stat()
+            except (OSError, RuntimeError, ValueError):
+                skipped_paths.extend(candidates)
+                continue
+
+            if (
+                before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns
+                or keeper_hash != expected_hash
+            ):
+                skipped_paths.extend(candidates)
+                continue
+
+            for raw_path in candidates:
                 path = Path(raw_path)
                 try:
                     resolved_path = path.resolve(strict=True)
@@ -516,19 +544,16 @@ class FolderHandler:
                     skipped_paths.append(raw_path)
                     continue
 
-                verified.append((raw_path, resolved_path, after.st_size, after.st_mtime_ns))
-
-            for raw_path, path, size, mtime_ns in verified[1:]:
                 try:
                     current = path.stat()
-                    if current.st_size != size or current.st_mtime_ns != mtime_ns:
+                    if current.st_size != after.st_size or current.st_mtime_ns != after.st_mtime_ns:
                         self.db.execute(
                             "UPDATE files SET quick_hash = NULL, full_hash = NULL WHERE path = ?;",
                             (raw_path,),
                         )
                         skipped_paths.append(raw_path)
                         continue
-                    path.unlink()
+                    resolved_path.unlink()
                 except OSError:
                     skipped_paths.append(raw_path)
                     continue
