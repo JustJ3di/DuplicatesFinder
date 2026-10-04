@@ -12,10 +12,94 @@ This script:
 from __future__ import annotations
 
 import logging
+import queue
+import threading
+import tkinter as tk
 from pathlib import Path
+from tkinter import messagebox, ttk
 
 from FolderHandler import FolderHandler
 from FolderSelector import FolderSelector
+
+
+def run_scan_with_progress(folder: Path, project_root: Path) -> None:
+    updates: queue.Queue[tuple[str, str]] = queue.Queue()
+
+    window = tk.Tk()
+    window.title("Duplicate File Finder")
+    window.resizable(False, False)
+
+    frame = ttk.Frame(window, padding=18)
+    frame.grid(sticky="nsew")
+    frame.columnconfigure(0, weight=1)
+
+    ttk.Label(frame, text="Scanning for duplicate files").grid(
+        row=0, column=0, sticky="w", pady=(0, 8)
+    )
+    status = tk.StringVar(value="Preparing scan...")
+    ttk.Label(frame, textvariable=status, wraplength=400).grid(
+        row=1, column=0, sticky="w", pady=(0, 12)
+    )
+    progress = ttk.Progressbar(frame, mode="indeterminate", length=400)
+    progress.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+
+    def scan() -> None:
+        handler = None
+        try:
+            handler = FolderHandler(folder, project_root=project_root)
+            updates.put(("status", "Scanning files..."))
+            handler.explore()
+
+            updates.put(("status", "Calculating quick hashes..."))
+            handler.compute_quick_hashes_for_size_duplicates()
+
+            updates.put(("status", "Checking duplicate candidates..."))
+            handler.compute_full_hashes_for_quick_groups()
+
+            updates.put(("status", "Generating report..."))
+            report_path = handler.generate_html_report()
+        except Exception as error:
+            updates.put(("error", str(error)))
+        else:
+            updates.put(("done", str(report_path)))
+        finally:
+            if handler is not None:
+                handler.close_db()
+
+    worker = threading.Thread(target=scan, daemon=True)
+
+    def close_window() -> None:
+        if not worker.is_alive():
+            window.destroy()
+
+    close_button = ttk.Button(frame, text="Close", command=close_window, state="disabled")
+    close_button.grid(row=3, column=0, sticky="e")
+    window.protocol("WM_DELETE_WINDOW", close_window)
+
+    def process_updates() -> None:
+        try:
+            while True:
+                event, message = updates.get_nowait()
+                if event == "status":
+                    status.set(message)
+                else:
+                    progress.stop()
+                    close_button.config(state="normal")
+                    if event == "done":
+                        status.set(f"Report created: {message}")
+                    else:
+                        status.set("Scan failed")
+                        messagebox.showerror("Scan failed", message, parent=window)
+        except queue.Empty:
+            pass
+
+        if worker.is_alive():
+            window.after(100, process_updates)
+
+    progress.start(12)
+    worker.start()
+    window.after(100, process_updates)
+    window.mainloop()
 
 
 def main() -> None:
@@ -29,21 +113,7 @@ def main() -> None:
     print("Select where to save the results...")
     project_folder = FolderSelector(title="Select where to save the results")
     project_folder = project_folder.select()
-    fh = FolderHandler(Path(path), project_root=Path(project_folder))
-    try:
-        fh.explore()
-
-        # Hash pipeline:
-        # size duplicates -> quick hash -> full hash.
-        fh.compute_quick_hashes_for_size_duplicates()
-        fh.compute_full_hashes_for_quick_groups()
-
-        report_path = fh.generate_html_report()
-        print("Report created:", report_path)
-
-    finally:
-        # Ensure DB resources are always released even if something goes wrong.
-        fh.close_db()
+    run_scan_with_progress(Path(path), Path(project_folder))
 
 
 if __name__ == "__main__":
