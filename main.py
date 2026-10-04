@@ -12,6 +12,7 @@ This script:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -35,6 +36,16 @@ def show_progress(phase: str, completed: int, total: int) -> None:
     if completed >= total:
         sys.stdout.write("\n")
     sys.stdout.flush()
+
+
+def open_report(report_path: Path) -> bool:
+    if sys.platform == "win32":
+        try:
+            os.startfile(str(report_path))
+            return True
+        except OSError:
+            pass
+    return webbrowser.open(report_path.as_uri())
 
 
 def main() -> None:
@@ -69,7 +80,11 @@ def main() -> None:
             f"Nessun file duplicato trovato tra i {len(fh.files)} file analizzati.\n\n"
             f"Report: {report_path}",
         )
-    webbrowser.open(report_path.as_uri())
+    if not open_report(report_path):
+        messagebox.showwarning(
+            "Report non aperto",
+            f"Apri manualmente questo report nel browser:\n{report_path}",
+        )
     print("Report created:", report_path)
 
 
