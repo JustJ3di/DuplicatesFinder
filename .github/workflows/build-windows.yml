@@ -35,3 +35,30 @@ jobs:
           path: dist/duplicates-finder.exe
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    name: Publish v1.0.1 release
+    needs: build
+    if: github.event_name == 'push' && github.event.head_commit.message == 'Publish v1.0.1 release with Windows executable'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows executable
+        uses: actions/download-artifact@v4
+        with:
+          name: duplicates-finder-windows-x86_64
+          path: release-assets
+
+      - name: Create release and upload executable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh api "repos/$GH_REPO/releases" --method POST \
+            -f tag_name=v1.0.1 \
+            -f name="DuplicatesFinder v1.0.1" \
+            -f body="Windows executable built from main (commit c79466b)." \
+            -f make_latest=false
+          gh release upload v1.0.1 release-assets/duplicates-finder.exe
