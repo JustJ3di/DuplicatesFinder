@@ -67,7 +67,7 @@ No backend required: open the HTML file in any browser.
 
 The selected output directory contains `duplicate_report.html` directly. The application does not create a timestamped subfolder; if a report with that name already exists, it asks before replacing it.
 
-The application has a main window for choosing both folders, starting scans, and viewing progress. If duplicates are found, a review window lets you choose copies to remove; it keeps one copy per group and asks for confirmation before deleting. The HTML report opens when the review closes. If no duplicates are found, the app displays a completion message and opens the report.
+The application has a main window for choosing both folders, starting scans, and viewing progress. If duplicates are found, a review window lets you choose copies to remove; all files start unselected, and one copy per group is always kept. Use **Selezione automatica** to select the copies the previous automatic rule would have removed, or **Deseleziona tutto** to clear the selection. The app asks for confirmation before deleting. The HTML report opens when the review closes. If no duplicates are found, the app displays a completion message and opens the report.
 
 ---
 

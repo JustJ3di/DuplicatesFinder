@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, List, Tuple
 
+from duplicate_selection import automatic_candidate_paths
 from FolderHandler import FolderHandler
 
 
@@ -60,7 +61,7 @@ class DuplicateCleaner:
             group_frame.pack(fill="x", expand=True, pady=5)
             ttk.Label(group_frame, text=f"Conserva: {paths[0]}", wraplength=820).pack(anchor="w", pady=(0, 4))
             for path in paths[1:]:
-                variable = tk.BooleanVar(value=True)
+                variable = tk.BooleanVar(value=False)
                 self.selections.append((path, variable))
                 ttk.Checkbutton(
                     group_frame,
@@ -74,10 +75,31 @@ class DuplicateCleaner:
         actions.pack(fill="x", pady=(12, 0))
         self.count_label = ttk.Label(actions)
         self.count_label.pack(side="left")
+        ttk.Button(
+            actions,
+            text="Selezione automatica",
+            command=self._select_automatic_candidates,
+        ).pack(side="left", padx=(12, 0))
+        ttk.Button(
+            actions,
+            text="Deseleziona tutto",
+            command=self._clear_selection,
+        ).pack(side="left", padx=8)
         ttk.Button(actions, text="Elimina file selezionati", command=self._delete_selected).pack(side="right")
         self._update_count()
         if self.parent is None:
             window.mainloop()
+
+    def _select_automatic_candidates(self) -> None:
+        automatic_paths = set(automatic_candidate_paths(self.groups))
+        for path, variable in self.selections:
+            variable.set(path in automatic_paths)
+        self._update_count()
+
+    def _clear_selection(self) -> None:
+        for _, variable in self.selections:
+            variable.set(False)
+        self._update_count()
 
     def _update_count(self) -> None:
         if self.count_label is not None:
